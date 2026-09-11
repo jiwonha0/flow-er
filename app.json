@@ -1,0 +1,40 @@
+{
+  "expo": {
+    "name": "FLOW-ER",
+    "slug": "pacemaker",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "light",
+    "scheme": "flower",
+
+    "web": {
+      "bundler": "metro",
+      "output": "single"
+    },
+
+    "android": {
+      "package": "com.flower.pace",
+      "permissions": [
+        "android.permission.RECORD_AUDIO",
+        "android.permission.MODIFY_AUDIO_SETTINGS"
+      ]
+    },
+
+    "ios": {
+      "bundleIdentifier": "com.flower.pace",
+      "infoPlist": {
+        "ITSAppUsesNonExemptEncryption": false
+      }
+    },
+
+    "plugins": [
+      "expo-audio"
+    ],
+
+    "extra": {
+      "eas": {
+        "projectId": "cc583642-d5ee-4af9-9baa-d7764ac81de3"
+      }
+    }
+  }
+}
