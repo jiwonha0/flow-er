@@ -9,8 +9,7 @@ import type { GoogleCalendarEvent } from './src/lib/googleCalendar';
 
 type Task = { id: number; name: string; start: string; duration: number };
 type TaskResult = 'done' | 'skipped';
-type TaskHistoryEntry = { id: string; seconds: number; recordedAt: string; ignored?: boolean };
-type TaskHistory = Record<string, TaskHistoryEntry[]>;
+type TaskHistory = Record<string, number[]>;
 type PaceType = 'morning' | 'daytime' | 'cooking' | 'night';
 type SavedRoutines = Record<PaceType, Task[]>;
 
@@ -67,43 +66,9 @@ const copyRoutines = (routines: SavedRoutines): SavedRoutines => ({
 
 const taskHistoryKey = (paceType: PaceType, taskName: string) => `${paceType}::${taskName.trim()}`;
 
-const taskEntriesFor = (paceType: PaceType, taskName: string, history: TaskHistory) => (
+const taskSamplesFor = (paceType: PaceType, taskName: string, history: TaskHistory) => (
   history[taskHistoryKey(paceType, taskName)] ?? []
 );
-
-const activeTaskEntriesFor = (paceType: PaceType, taskName: string, history: TaskHistory) => (
-  taskEntriesFor(paceType, taskName, history).filter((entry) => !entry.ignored)
-);
-
-const taskSamplesFor = (paceType: PaceType, taskName: string, history: TaskHistory) => (
-  activeTaskEntriesFor(paceType, taskName, history).map((entry) => entry.seconds)
-);
-
-const medianSeconds = (values: number[]) => {
-  if (values.length === 0) return 0;
-  const sorted = [...values].sort((a, b) => a - b);
-  const middle = Math.floor(sorted.length / 2);
-  return sorted.length % 2 === 0 ? (sorted[middle - 1] + sorted[middle]) / 2 : sorted[middle];
-};
-
-const isOutlierEntry = (entry: TaskHistoryEntry, allEntries: TaskHistoryEntry[]) => {
-  if (entry.ignored) return false;
-  const activeEntries = allEntries.filter((item) => !item.ignored);
-  if (activeEntries.length < 4) return false;
-
-  const comparisonSeconds = activeEntries
-    .filter((item) => item.id !== entry.id)
-    .map((item) => item.seconds);
-  if (comparisonSeconds.length < 3) return false;
-
-  const median = medianSeconds(comparisonSeconds);
-  if (median <= 0) return false;
-
-  const difference = Math.abs(entry.seconds - median);
-  const isTooLong = entry.seconds >= median * 1.75 && difference >= 60;
-  const isTooShort = entry.seconds <= median * 0.5 && difference >= 60;
-  return isTooLong || isTooShort;
-};
 
 const learnedMinutesFor = (paceType: PaceType, taskName: string, history: TaskHistory) => {
   const samples = taskSamplesFor(paceType, taskName, history);
@@ -160,19 +125,6 @@ const formatDuration = (seconds: number) => {
   const secs = safeSeconds % 60;
   return minutes > 0 ? `${minutes}분 ${secs}초` : `${secs}초`;
 };
-
-const formatMinutes = (seconds: number) => {
-  const minutes = Math.max(0, seconds / 60);
-  return `${Math.round(minutes * 10) / 10}분`;
-};
-
-const formatHistoryDate = (isoText: string) => {
-  const date = new Date(isoText);
-  if (Number.isNaN(date.getTime())) return '날짜 없음';
-  return `${date.getMonth() + 1}/${date.getDate()} ${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`;
-};
-
-const historyEntryId = () => `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
 
 const remainingRoutineSeconds = (routine: Task[], fromIndex: number) => (
   routine.slice(fromIndex).reduce((total, item) => total + item.duration * 60, 0)
@@ -258,33 +210,10 @@ export default function App() {
           AsyncStorage.getItem(TASK_HISTORY_KEY),
           AsyncStorage.getItem(SAVED_ROUTINES_KEY),
         ]);
-        const rawHistory = savedHistory ? JSON.parse(savedHistory) : {};
-        const parsedHistory: TaskHistory = Object.entries(rawHistory).reduce<TaskHistory>((result, [key, rawEntries]) => {
+        const rawHistory: TaskHistory = savedHistory ? JSON.parse(savedHistory) : {};
+        const parsedHistory: TaskHistory = Object.entries(rawHistory).reduce<TaskHistory>((result, [key, samples]) => {
           const scopedKey = key.includes('::') ? key : taskHistoryKey('morning', key);
-          const entriesArray = Array.isArray(rawEntries) ? rawEntries : [];
-          result[scopedKey] = entriesArray
-            .map((entry, index) => {
-              if (typeof entry === 'number') {
-                return {
-                  id: `${scopedKey}-${index}-${entry}`,
-                  seconds: entry,
-                  recordedAt: new Date(Date.now() - (entriesArray.length - index) * 24 * 60 * 60 * 1000).toISOString(),
-                  ignored: false,
-                };
-              }
-
-              if (entry && typeof entry === 'object' && typeof entry.seconds === 'number') {
-                return {
-                  id: typeof entry.id === 'string' ? entry.id : `${scopedKey}-${index}-${entry.seconds}`,
-                  seconds: Math.max(0, entry.seconds),
-                  recordedAt: typeof entry.recordedAt === 'string' ? entry.recordedAt : new Date().toISOString(),
-                  ignored: Boolean(entry.ignored),
-                };
-              }
-
-              return null;
-            })
-            .filter((entry): entry is TaskHistoryEntry => entry !== null);
+          result[scopedKey] = samples;
           return result;
         }, {});
         const parsedRoutines = storedRoutines ? JSON.parse(storedRoutines) : copyRoutines(defaultRoutines);
@@ -350,24 +279,6 @@ export default function App() {
     setTimeout(() => routineListRef.current?.scrollToEnd({ animated: true }), 150);
   };
 
-  const moveDraftTask = (id: number, direction: -1 | 1) => {
-    setDraftTasks((previous) => {
-      const currentIndex = previous.findIndex((item) => item.id === id);
-      const nextIndex = currentIndex + direction;
-
-      if (currentIndex < 0 || nextIndex < 0 || nextIndex >= previous.length) {
-        return previous;
-      }
-
-      const nextTasks = [...previous];
-      const currentItem = nextTasks[currentIndex];
-      nextTasks[currentIndex] = nextTasks[nextIndex];
-      nextTasks[nextIndex] = currentItem;
-
-      return nextTasks;
-    });
-  };
-
   const recordCompletedTask = () => {
     const taskName = task.name.trim();
     if (!taskName || elapsedSeconds < MIN_RECORDABLE_SECONDS) return;
@@ -377,30 +288,11 @@ export default function App() {
 
     const nextHistory: TaskHistory = {
       ...taskHistory,
-      [historyKey]: [
-        ...(taskHistory[historyKey] ?? []),
-        { id: historyEntryId(), seconds: elapsedSeconds, recordedAt: new Date().toISOString(), ignored: false },
-      ].slice(-MAX_HISTORY_SAMPLES * 2),
+      [historyKey]: [...(taskHistory[historyKey] ?? []), elapsedSeconds].slice(-MAX_HISTORY_SAMPLES),
     };
 
     setTaskHistory(nextHistory);
     setDraftTasks((previous) => applyLearnedDurations(paceType, previous, nextHistory));
-    AsyncStorage.setItem(TASK_HISTORY_KEY, JSON.stringify(nextHistory)).catch(() => undefined);
-  };
-
-  const excludeHistoryEntry = (paceType: PaceType, taskName: string, entryId: string) => {
-    const historyKey = taskHistoryKey(paceType, taskName);
-    const nextHistory: TaskHistory = {
-      ...taskHistory,
-      [historyKey]: (taskHistory[historyKey] ?? []).map((entry) => (
-        entry.id === entryId ? { ...entry, ignored: true } : entry
-      )),
-    };
-
-    setTaskHistory(nextHistory);
-    if (selectedPaceType) {
-      setDraftTasks((previous) => applyLearnedDurations(selectedPaceType, previous, nextHistory));
-    }
     AsyncStorage.setItem(TASK_HISTORY_KEY, JSON.stringify(nextHistory)).catch(() => undefined);
   };
 
@@ -720,11 +612,7 @@ export default function App() {
             ? '완료 기록 3회부터 최근 10회 평균 시간이 자동 반영돼요.'
             : '내 준비 기록을 불러오는 중이에요.'}
         </Text>
-        <Text style={styles.dragHint}>
-          {Platform.OS === 'web'
-            ? '웹에서는 ↑↓ 버튼으로 순서를 바꿀 수 있어요.'
-            : '☰을 길게 누른 채 끌어 순서를 바꿀 수 있어요.'}
-        </Text>
+        <Text style={styles.dragHint}>☰을 길게 누른 채 끌어 순서를 바꿀 수 있어요.</Text>
       </View>
     </View>
   );
@@ -740,81 +628,6 @@ export default function App() {
     </View>
   );
 
-
-
-  const renderHistoryChart = (paceType: PaceType, taskName: string, entries: TaskHistoryEntry[]) => {
-    const recentEntries = entries.slice(-MAX_HISTORY_SAMPLES);
-    const chartWidth = 280;
-    const chartHeight = 126;
-    const chartPaddingX = 18;
-    const chartPaddingY = 18;
-    const maxSeconds = Math.max(60, ...recentEntries.map((entry) => entry.seconds));
-    const usableWidth = chartWidth - chartPaddingX * 2;
-    const usableHeight = chartHeight - chartPaddingY * 2 - 18;
-
-    const points = recentEntries.map((entry, index) => {
-      const x = chartPaddingX + (recentEntries.length <= 1 ? usableWidth / 2 : (usableWidth * index) / (recentEntries.length - 1));
-      const y = chartPaddingY + usableHeight - (entry.seconds / maxSeconds) * usableHeight;
-      const outlier = isOutlierEntry(entry, entries);
-      return { entry, index, x, y, outlier };
-    });
-
-    const segments = points.slice(1).map((point, index) => {
-      const previous = points[index];
-      const dx = point.x - previous.x;
-      const dy = point.y - previous.y;
-      const length = Math.sqrt(dx * dx + dy * dy);
-      const angle = Math.atan2(dy, dx) * (180 / Math.PI);
-      return { x: previous.x, y: previous.y, length, angle, key: `${previous.entry.id}-${point.entry.id}` };
-    });
-
-    if (recentEntries.length === 0) {
-      return <Text style={styles.noHistoryText}>아직 그래프로 볼 기록이 없어요.</Text>;
-    }
-
-    return (
-      <View>
-        <View style={[styles.historyChart, { width: chartWidth, height: chartHeight }]}> 
-          {segments.map((segment) => (
-            <View
-              key={segment.key}
-              style={[
-                styles.historyLine,
-                {
-                  left: segment.x,
-                  top: segment.y,
-                  width: segment.length,
-                  transform: [{ rotate: `${segment.angle}deg` }],
-                },
-              ]}
-            />
-          ))}
-
-          {points.map((point) => (
-            <Pressable
-              key={point.entry.id}
-              style={[
-                styles.historyPoint,
-                { left: point.x - 7, top: point.y - 7 },
-                point.outlier && styles.outlierPoint,
-                point.entry.ignored && styles.ignoredPoint,
-              ]}
-              disabled={!point.outlier || point.entry.ignored}
-              onPress={() => excludeHistoryEntry(paceType, taskName, point.entry.id)}
-            >
-              <Text style={styles.historyPointText}>{point.index + 1}</Text>
-            </Pressable>
-          ))}
-        </View>
-
-        <View style={styles.historyChartLabels}>
-          <Text style={styles.historyChartLabel}>{formatHistoryDate(recentEntries[0].recordedAt)}</Text>
-          <Text style={styles.historyChartLabel}>{formatMinutes(maxSeconds)}</Text>
-          <Text style={styles.historyChartLabel}>{formatHistoryDate(recentEntries[recentEntries.length - 1].recordedAt)}</Text>
-        </View>
-      </View>
-    );
-  };
 
   const learningTaskNamesFor = (paceType: PaceType) => Array.from(new Set([
     ...savedRoutines[paceType].map((item) => item.name.trim()).filter(Boolean),
@@ -845,7 +658,7 @@ export default function App() {
               <Text style={styles.guideNumber}>2</Text>
               <View style={styles.guideTextArea}>
                 <Text style={styles.guideTitle}>내 루틴 편집</Text>
-                <Text style={styles.guideText}>단계를 추가·삭제하거나 시간을 바꿀 수 있어요. 웹에서는 ↑↓ 버튼, 앱에서는 ☰ 드래그로 순서를 바꿀 수 있어요.</Text>
+                <Text style={styles.guideText}>단계를 추가·삭제하거나 시간을 바꿀 수 있어요. ☰을 길게 눌러 순서도 바꿀 수 있어요.</Text>
               </View>
             </View>
             <View style={styles.guideCard}>
@@ -885,7 +698,7 @@ export default function App() {
             </Pressable>
             <Text style={styles.learningScreenTitle}>준비 기록</Text>
             <Text style={styles.learningScreenDescription}>
-              준비 페이스별 완료 기록을 그래프로 확인하고, 튀는 기록은 평균에서 제외할 수 있어요.
+              준비 페이스별로 최근 10회의 완료 기록을 확인할 수 있어요.
             </Text>
 
             {(Object.keys(paceOptions) as PaceType[]).map((paceType) => (
@@ -894,27 +707,20 @@ export default function App() {
                   {paceOptions[paceType].icon} {paceOptions[paceType].title}
                 </Text>
                 {learningTaskNamesFor(paceType).map((taskName) => {
-                  const entries = taskEntriesFor(paceType, taskName, taskHistory);
-                  const activeEntries = entries.filter((entry) => !entry.ignored);
-                  const samples = activeEntries.map((entry) => entry.seconds);
+                  const samples = taskSamplesFor(paceType, taskName, taskHistory);
                   const recentSamples = samples.slice(-MAX_HISTORY_SAMPLES);
                   const averageSeconds = recentSamples.length > 0
                     ? recentSamples.reduce((sum, seconds) => sum + seconds, 0) / recentSamples.length
                     : 0;
-                  const outlierCount = entries.filter((entry) => isOutlierEntry(entry, entries)).length;
                   const learnedMinutes = learnedMinutesFor(paceType, taskName, taskHistory);
                   const routineDuration = savedRoutines[paceType].find((item) => item.name.trim() === taskName)?.duration;
 
                   return (
                     <View key={`${paceType}-${taskName}`} style={styles.learningRecordCard}>
-                      <View style={styles.learningRecordHeader}>
-                        <Text style={styles.learningRecordName}>{taskName}</Text>
-                        {outlierCount > 0 && <Text style={styles.outlierBadge}>이상치 {outlierCount}개 · 제거 권장</Text>}
-                      </View>
-
+                      <Text style={styles.learningRecordName}>{taskName}</Text>
                       <View style={styles.learningMetrics}>
                         <View>
-                          <Text style={styles.learningMetricLabel}>평균 반영 기록</Text>
+                          <Text style={styles.learningMetricLabel}>완료 기록</Text>
                           <Text style={styles.learningMetricValue}>{samples.length}회</Text>
                         </View>
                         <View>
@@ -924,42 +730,6 @@ export default function App() {
                           </Text>
                         </View>
                       </View>
-
-                      {renderHistoryChart(paceType, taskName, entries)}
-
-                      <View style={styles.historyRecordList}>
-                        {entries.slice(-MAX_HISTORY_SAMPLES).map((entry) => {
-                          const outlier = isOutlierEntry(entry, entries);
-                          return (
-                            <View
-                              key={entry.id}
-                              style={[
-                                styles.historyRecordRow,
-                                outlier && styles.outlierRecordRow,
-                                entry.ignored && styles.ignoredRecordRow,
-                              ]}
-                            >
-                              <View style={styles.historyRecordTextArea}>
-                                <Text style={styles.historyRecordDate}>{formatHistoryDate(entry.recordedAt)}</Text>
-                                <Text style={styles.historyRecordDuration}>{formatMinutes(entry.seconds)}</Text>
-                              </View>
-                              {entry.ignored ? (
-                                <Text style={styles.ignoredRecordText}>평균 제외됨</Text>
-                              ) : outlier ? (
-                                <Pressable
-                                  style={styles.removeOutlierButton}
-                                  onPress={() => excludeHistoryEntry(paceType, taskName, entry.id)}
-                                >
-                                  <Text style={styles.removeOutlierButtonText}>이상치 제거</Text>
-                                </Pressable>
-                              ) : (
-                                <Text style={styles.normalRecordText}>정상 기록</Text>
-                              )}
-                            </View>
-                          );
-                        })}
-                      </View>
-
                       <View style={styles.appliedDurationRow}>
                         <Text style={styles.appliedDurationLabel}>다음 루틴 적용 시간</Text>
                         <Text style={styles.appliedDurationValue}>
@@ -1035,52 +805,15 @@ export default function App() {
               >
                 {renderSetupHeader()}
 
-                {draftTasks.map((item, index) => (
-                  <View key={item.id} style={styles.routineItem}>
-                    <Text style={styles.routineNumber}>{index + 1}</Text>
-
-                    <View style={styles.routineInputs}>
-                      <TextInput
-                        value={item.name}
-                        onChangeText={(value) => updateDraftTask(item.id, 'name', value)}
-                        style={styles.taskNameInput}
-                        placeholder="준비 단계"
-                      />
-
-                      <View style={styles.durationRow}>
-                        <TextInput
-                          value={String(item.duration)}
-                          onChangeText={(value) => updateDraftTask(item.id, 'duration', value)}
-                          style={styles.durationInput}
-                          keyboardType="decimal-pad"
-                        />
-                        <Text style={styles.minuteText}>분</Text>
-                      </View>
-                    </View>
-
-                    <View style={styles.webOrderButtons}>
-                      <Pressable
-                        style={[styles.webOrderButton, index === 0 && styles.disabledOrderButton]}
-                        onPress={() => moveDraftTask(item.id, -1)}
-                        disabled={index === 0}
-                      >
-                        <Text style={styles.webOrderButtonText}>↑</Text>
-                      </Pressable>
-
-                      <Pressable
-                        style={[styles.webOrderButton, index === draftTasks.length - 1 && styles.disabledOrderButton]}
-                        onPress={() => moveDraftTask(item.id, 1)}
-                        disabled={index === draftTasks.length - 1}
-                      >
-                        <Text style={styles.webOrderButtonText}>↓</Text>
-                      </Pressable>
-                    </View>
-
-                    <Pressable style={styles.deleteTaskButton} onPress={() => removeDraftTask(item.id)}>
-                      <Text style={styles.deleteTaskText}>삭제</Text>
-                    </Pressable>
-                  </View>
-                ))}
+                <DraggableFlatList
+                  ref={routineListRef}
+                  data={draftTasks}
+                  renderItem={renderRoutineItem}
+                  keyExtractor={(item) => String(item.id)}
+                  onDragEnd={({ data }) => setDraftTasks(data)}
+                  activationDistance={8}
+                  scrollEnabled={false}
+                />
 
                 {renderSetupFooter()}
               </ScrollView>
@@ -1356,28 +1089,6 @@ const styles = StyleSheet.create({
   appliedDurationLabel: { color: '#527133', fontSize: 12, fontWeight: '700' },
   appliedDurationValue: { color: '#294B17', fontSize: 14, fontWeight: '800' },
   learningNeedMore: { color: '#888', fontSize: 12, marginTop: 11 },
-  learningRecordHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 10 },
-  outlierBadge: { color: '#B85C00', backgroundColor: '#FFF1D7', borderRadius: 10, paddingHorizontal: 8, paddingVertical: 4, fontSize: 11, fontWeight: '800' },
-  noHistoryText: { color: '#999', fontSize: 12, marginTop: 14 },
-  historyChart: { position: 'relative', backgroundColor: '#F7F8FC', borderRadius: 16, marginTop: 16, overflow: 'hidden' },
-  historyLine: { position: 'absolute', height: 2, backgroundColor: '#8BAE63' },
-  historyPoint: { position: 'absolute', width: 14, height: 14, borderRadius: 7, backgroundColor: '#5A7D32', alignItems: 'center', justifyContent: 'center' },
-  outlierPoint: { backgroundColor: '#FF9C3A', width: 18, height: 18, borderRadius: 9 },
-  ignoredPoint: { backgroundColor: '#BBB', opacity: 0.55 },
-  historyPointText: { color: '#FFF', fontSize: 8, fontWeight: '800' },
-  historyChartLabels: { width: 280, flexDirection: 'row', justifyContent: 'space-between', marginTop: 6 },
-  historyChartLabel: { color: '#999', fontSize: 10 },
-  historyRecordList: { marginTop: 12, gap: 7 },
-  historyRecordRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', backgroundColor: '#F7F8FC', borderRadius: 12, paddingHorizontal: 12, paddingVertical: 10 },
-  outlierRecordRow: { backgroundColor: '#FFF4E5', borderWidth: 1, borderColor: '#FFD59B' },
-  ignoredRecordRow: { opacity: 0.55 },
-  historyRecordTextArea: { flex: 1 },
-  historyRecordDate: { color: '#777', fontSize: 12 },
-  historyRecordDuration: { color: '#171717', fontSize: 15, fontWeight: '800', marginTop: 3 },
-  removeOutlierButton: { backgroundColor: '#171717', borderRadius: 10, paddingHorizontal: 10, paddingVertical: 7 },
-  removeOutlierButtonText: { color: '#FFF', fontSize: 11, fontWeight: '800' },
-  normalRecordText: { color: '#888', fontSize: 11, fontWeight: '700' },
-  ignoredRecordText: { color: '#888', fontSize: 11, fontWeight: '800' },
   guideCard: { flexDirection: 'row', backgroundColor: '#FFF', borderRadius: 18, padding: 18, marginBottom: 12 },
   guideNumber: { width: 28, height: 28, borderRadius: 14, backgroundColor: '#EAF4DE', color: '#375A1F', fontSize: 13, lineHeight: 28, textAlign: 'center', fontWeight: '800', marginRight: 12 },
   guideTextArea: { flex: 1 },
@@ -1385,10 +1096,6 @@ const styles = StyleSheet.create({
   guideText: { color: '#777', fontSize: 13, lineHeight: 20, marginTop: 6 },
   deleteTaskButton: { marginLeft: 8, paddingHorizontal: 8, paddingVertical: 8 },
   deleteTaskText: { fontSize: 12, color: '#D85A5A', fontWeight: '700' },
-  webOrderButtons: { marginLeft: 8, gap: 5 },
-  webOrderButton: { width: 28, height: 28, borderRadius: 8, backgroundColor: '#EAF4DE', alignItems: 'center', justifyContent: 'center' },
-  webOrderButtonText: { color: '#294B17', fontSize: 15, fontWeight: '800' },
-  disabledOrderButton: { opacity: 0.35 },
   addTaskButton: { alignItems: 'center', paddingVertical: 13, borderRadius: 12, borderWidth: 1, borderColor: '#B9D89F', borderStyle: 'dashed', marginTop: 4 },
   addTaskText: { color: '#3C6B20', fontSize: 14, fontWeight: '800' },
   date: { fontSize: 15, color: '#666', marginBottom: 12 },
